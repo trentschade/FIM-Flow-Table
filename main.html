@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gage & Flood Inundation Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/esri-leaflet@3.0.10/dist/esri-leaflet.js"></script>
+    <style>
+        body { margin: 0; padding: 0; display: flex; height: 100vh; }
+        #map-container { width: 100%; height: 100vh; transition: width 0.5s; }
+        #table-container { width: 0; overflow: hidden; transition: width 0.5s; background: #f8f9fa; padding: 10px; display: none; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid black; padding: 5px; text-align: left; }
+    </style>
+</head>
+<body>
+
+<div id="map-container">
+    <div id="map" style="height: 100%;"></div>
+</div>
+<div id="table-container">
+    <h3>Flood Inundation Data</h3>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>Layer</th>
+                <th>Toggle</th>
+            </tr>
+        </thead>
+        <tbody id="layer-toggle-body"></tbody> <!-- 🔹 This is where toggle rows go -->
+    </table>
+
+    <h4>Flood Data Details</h4>
+    <table>
+        <thead>
+            <tr>
+                <th>Layer</th>
+                <th>Attribute</th>
+                <th>Value</th>
+            </tr>
+        </thead>
+        <tbody id="table-body"></tbody> <!-- 🔹 This is where flood data goes -->
+    </table>
+</div>
+
+<script>
+    // Initialize the map
+    var map = L.map('map').setView([39.8283, -98.5795], 5); // Centered on the US
+
+    // Add a basemap
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+    // Add Gage Locations Layer
+    var gageLayer = L.esri.featureLayer({
+        url: 'https://maps.water.noaa.gov/server/rest/services/fim_libs/static_flow_based_catfim/FeatureServer/0', // Replace with actual Gage Layer URL
+        onEachFeature: function (feature, layer) {
+            // Show tooltip on hover
+            layer.bindTooltip(`Gage: ${feature.properties.name} (ID: ${feature.properties.ahps_lid})`);
+
+            // Click event to query flood inundation layers
+            layer.on("click", function () {
+                showTableAndQueryFloodData(feature);
+            });
+        }
+    }).addTo(map);
+
+    var floodLayerMap = {}; // Store flood layers
+
+    function showTableAndQueryFloodData(gageFeature) {
+        // Resize the map and show table
+        document.getElementById("map-container").style.width = "50%";
+        document.getElementById("table-container").style.width = "50%";
+        document.getElementById("table-container").style.display = "block";
+
+        // Clear existing flood layers and table data
+        Object.values(floodLayerMap).forEach(layer => map.removeLayer(layer));
+        floodLayerMap = {}; // Reset layers
+        // Store reference to the toggle table body
+        var toggleTableBody = document.getElementById("layer-toggle-body");
+
+        // Clear only after checking if elements exist
+        if (toggleTableBody) {
+            toggleTableBody.innerHTML = "";
+        }        
+        
+        document.getElementById("table-body").innerHTML = "";
+
+        // Define flood inundation layers
+        var floodLayers = [
+            { name: "Action", url: "https://maps.water.noaa.gov/server/rest/services/fim_libs/static_flow_based_catfim/FeatureServer/1" },
+            { name: "Minor", url: "https://maps.water.noaa.gov/server/rest/services/fim_libs/static_flow_based_catfim/FeatureServer/2" },
+            { name: "Moderate", url: "https://maps.water.noaa.gov/server/rest/services/fim_libs/static_flow_based_catfim/FeatureServer/3" },
+            { name: "Major", url: "https://maps.water.noaa.gov/server/rest/services/fim_libs/static_flow_based_catfim/FeatureServer/4" },
+            { name: "Record", url: "https://maps.water.noaa.gov/server/rest/services/fim_libs/static_flow_based_catfim/FeatureServer/5" }
+        ];
+
+        // Query each flood layer
+        floodLayers.forEach(layerInfo => {
+            var query = L.esri.query({
+                url: layerInfo.url
+            });
+
+            // Filter flood polygons by gage location (using an attribute, e.g., `GAGE_ID`)
+            query.where(`ahps_lid = '${gageFeature.properties.ahps_lid}'`);
+
+            query.run(function (error, featureCollection) {
+                if (error || featureCollection.features.length === 0) return;
+
+                // Add flood polygons to the map
+                var floodLayer = L.geoJSON(featureCollection, {
+                    style: { color: 'red', weight: 2, fillOpacity: 0.3 }
+                }).addTo(map);
+
+                floodLayerMap[layerInfo.name] = floodLayer; // Store the layer
+
+                if (Object.keys(floodLayerMap).length === 1) {
+                    map.fitBounds(floodLayer.getBounds(), { padding: [20, 20] });
+                }
+
+                // Add toggle switch in the table
+                var row = `<tr>
+                    <td>${layerInfo.name}</td>
+                    <td>
+                        <input type="checkbox" class="toggle-switch" data-layer="${layerInfo.name}" checked>
+                    </td>
+                </tr>`;
+                document.getElementById("layer-toggle-body").innerHTML += row;
+
+                // Populate table with data
+                featureCollection.features.forEach(floodFeature => {
+                    var row = `<tr><td>${layerInfo.name}</td><td>flow (cfs)</td><td>${floodFeature.properties.q}</td></tr>`;
+                        document.getElementById("table-body").innerHTML += row;
+
+/*                    Object.entries(floodFeature.properties).forEach(([key, value]) => {
+                        var row = `<tr><td>${layerInfo.name}</td><td>${key}</td><td>${value}</td></tr>`;
+                        document.getElementById("table-body").innerHTML += row;
+                    }); 
+*/                });
+                attachToggleListeners(); // Attach toggle switch events
+            });
+        });
+    }
+    function attachToggleListeners() {
+        setTimeout(() => {
+            document.querySelectorAll(".toggle-switch").forEach(switchElement => {
+                switchElement.addEventListener("change", function () {
+                    var layerName = this.getAttribute("data-layer");
+                    if (this.checked) {
+                        map.addLayer(floodLayerMap[layerName]);
+                    } else {
+                        map.removeLayer(floodLayerMap[layerName]);
+                    }
+                });
+            });
+        }, 100); // Delay ensures elements exist
+    }
+</script>
+
+</body>
+</html>
